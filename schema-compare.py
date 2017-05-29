@@ -2,7 +2,8 @@ import MySQLdb
 import _mysql_exceptions
 from _mysql_exceptions import OperationalError
 import argparse
-
+import sys
+import os.path
 
 def get_args():
     desc = "Stage Vs Production"
@@ -14,13 +15,16 @@ Examples:
                                     formatter_class=argparse.RawDescriptionHelpFormatter)
 
     parser.add_argument('-c', '--client',
-                       help='Host of the db')
+                       help='Host of the db',
+                       required=True)
 
     parser.add_argument('-u', '--user',
-                       help='User Of db')
+                       help='User Of db',
+                       required=True)
 
     parser.add_argument('-p', '--passwd',
-                       help="Password of the user's database")
+                       help="Password of the user's database",
+                       required=True)
 
     parser.add_argument('-f1', '--file1',
                        help="Stage server dump file",
@@ -34,22 +38,35 @@ Examples:
     return ret
 
 def get_connection(client, user, passwd):
-	return MySQLdb.connect(host=client, user=user, passwd=passwd)
+	
+	try:
+		return MySQLdb.connect(host=client, user=user, passwd=passwd)
+	except MySQLdb.Error as e:
+		print("Something went wrong:")
+		print(e)
+		sys.exit()
 
-def import_into_db(cur, db, filename):
-	cmd = 'create database ' + db + ';'
-	cur.execute(cmd)
-	cmd = 'use ' + db + ';'
-	cur.execute(cmd)
-	fd = open(filename, 'r')
-	sqlFile = fd.read()
-	fd.close()
-	sqlCommands = sqlFile.split(';')
+def import_into_db(cur, dbName, filename):
+	try: 
+		cmd = 'create database ' + dbName + ';'
+		cur.execute(cmd)
+		cmd = 'use ' + dbName + ';'
+		cur.execute(cmd)
+		fd = open(filename, 'r')
+		sqlFile = fd.read()
+		fd.close()
+		sqlCommands = sqlFile.split(';')
+	except Exception as e:
+		print e
+		close_connection()
+		sys.exit()
 	for command in sqlCommands:
 	    try:
 	        cur1.execute(command)
 	    except OperationalError, msg:
 	        print "Command skipped: ", msg
+	        close_connection()
+	        sys.exit()
 
 def fetchTableName(cur, dbName):
 	cmd = 'use ' + dbName + ';'
@@ -108,6 +125,10 @@ def tableSync():
 	for row in tableName2:
 	    productionDB.append(row[0])
 	missingInStage, missingInProduction, commonTable = checkMissingTable(stageDB, productionDB)
+	if len(missingInStage) > 0 or len(missingInProduction) > 0:
+		print '#############################################'
+		print '############Table Synchronization############'
+		print '#############################################'
 	if len(missingInStage) > 0 :
 		print 'Missing table in Stage Server are : '
 		print missingInStage
@@ -121,7 +142,10 @@ def columnSync(commonTable):
 	for table in commonTable:
 		stageCol, productionCol = checkMissingColumn(cur1, cur2, table, 'stage', 'prod') 
 		if len(stageCol) > 0 or len(productionCol) > 0:
-			print 'Table : ' + table
+			print '#############################################'
+			print '############Column Synchronization###########'
+			print '#############################################'
+			print 'For Table : {}'.format(table)
 		if len(stageCol) > 0:
 			print 'Missing Columns in Stage Server are : '
 			print stageCol
@@ -131,11 +155,14 @@ def columnSync(commonTable):
 
 
 def close_connection():
-	cur1.execute('drop database stage;')
-	cur2.execute('drop database prod;')
-	db.close()
-	cur1.close()
-	cur2.close()
+	try:
+		cur1.execute('drop database stage;')
+		cur2.execute('drop database prod;')
+		cur1.close()
+		cur2.close()
+		db.close()
+	except Exception as e:
+		sys.exit()
 
 if __name__ == '__main__':
 	global args, db, cur1, cur2
@@ -143,18 +170,21 @@ if __name__ == '__main__':
 	args = get_args()
 	client = args.client; user = args.user; passwd = args.passwd
 	file1 = args.file1; file2 = args.file2
-	if client is None:
-		client = 'localhost'
-	if user is None:
-		user = 'root'
-	if passwd is None:
-		passwd = 'root'
+	if os.path.isfile(file1) == False:
+		print 'Stage db dump file does not exist'
+		sys.exit()
+	if os.path.isfile(file2) == False:
+		print 'Production db dump file does not exist'
+		sys.exit()
 	db = get_connection(client, user, passwd)
+
 	cur1 = db.cursor()
 	cur2 = db.cursor()
+
 	import_into_db(cur1, 'stage', file1)
-	import_into_db(cur1, 'prod', file2)
+	import_into_db(cur2, 'prod', file2)
 
 	commonTable = tableSync()
 	columnSync(commonTable)
+
 	close_connection()
